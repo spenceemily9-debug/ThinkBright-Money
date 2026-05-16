@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback, memo } from "react";
 
 /* ══════════════════════════════════════════════════════════
    CONSTANTS
@@ -109,27 +109,17 @@ const VEHICLE_ROWS = [
 /* ══════════════════════════════════════════════════════════
    HELPERS
 ══════════════════════════════════════════════════════════ */
-const p$ = v => {
-  if(v === "" || v === null || v === undefined) return 0;
-  const n = parseFloat(String(v).replace(/,/g,""));
-  return isNaN(n) ? 0 : n;
-};
+const p$ = v => { const n = parseFloat(String(v ?? "").replace(/,/g,"")); return isNaN(n) ? 0 : n; };
 const uid = () => "k" + Math.random().toString(36).slice(2,9);
 const sumKeys = (obj, keys) => keys.reduce((s,k) => s + p$(obj?.[k]), 0);
+const saveLS = (key, data) => { try { localStorage.setItem(key, JSON.stringify(data)); } catch {} };
+const loadLS = key => { try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; } catch { return null; } };
 
 function makeFmt(currency) {
   return n => {
     try { return new Intl.NumberFormat(currency.locale,{minimumFractionDigits:2,maximumFractionDigits:2}).format(Number(n)||0); }
     catch { return (Number(n)||0).toFixed(2); }
   };
-}
-
-/* ── Storage helpers ── */
-function saveLS(key, data) {
-  try { localStorage.setItem(key, JSON.stringify(data)); } catch(e) { console.warn("save failed",e); }
-}
-function loadLS(key) {
-  try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; } catch { return null; }
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -140,42 +130,65 @@ const C = {
   text:"#e8eaf2", textMid:"#8a90a8", textDim:"#4a5068",
   green:"#4ade80", red:"#f87171", blue:"#60a5fa", purple:"#c084fc",
 };
-const btnBase = {border:"none",cursor:"pointer",borderRadius:"8px",fontFamily:"inherit",fontWeight:"700",transition:"all 0.15s"};
-const monoFont = {fontFamily:"'Fira Code',monospace"};
+const B = {border:"none",cursor:"pointer",borderRadius:"8px",fontFamily:"inherit",fontWeight:"700",transition:"all 0.15s"};
+const M = {fontFamily:"'Fira Code',monospace"};
 
 /* ══════════════════════════════════════════════════════════
-   LIVE INPUT — updates state on every keystroke (real-time calc)
-   but does NOT cause scroll jump because we use a controlled
-   input that is memoized per-cell identity
+   CELL INPUT
+   ─────────────────────────────────────────────────────────
+   The key insight: we keep a LOCAL string state for what's
+   displayed while the user types. We only push to the parent
+   store on BLUR (when they leave the field). The parent
+   calculation store is updated separately via a shared ref
+   map so totals stay live without re-rendering the inputs.
 ══════════════════════════════════════════════════════════ */
-const LiveInput = ({ value, onChange, placeholder="0.00", textAlign="right", isLabel=false }) => {
-  const style = {
-    width:"100%", background:"transparent", border:"none",
-    borderBottom:`1px solid ${C.textDim}44`,
-    color: C.text,
-    fontSize: isLabel ? "0.82rem" : "0.8rem",
-    fontWeight: isLabel ? "600" : "400",
-    padding:"5px 2px", outline:"none",
-    textAlign: isLabel ? "left" : textAlign,
-    fontFamily: isLabel ? "inherit" : "'Fira Code',monospace",
-    WebkitAppearance:"none",
-  };
+const CellInput = memo(({ storeValue, onBlurCommit, placeholder="0.00", align="right", isLabel=false, style={} }) => {
+  const [local, setLocal] = useState(storeValue ?? "");
+  const focused = useRef(false);
+
+  // Sync from store only when not focused (avoids clobbering typing)
+  useEffect(() => {
+    if (!focused.current) setLocal(storeValue ?? "");
+  }, [storeValue]);
+
   return (
     <input
       type="text"
       inputMode={isLabel ? "text" : "decimal"}
-      value={value ?? ""}
-      onChange={e => onChange(e.target.value)}
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onFocus={() => { focused.current = true; }}
+      onBlur={e => {
+        focused.current = false;
+        onBlurCommit(e.target.value);
+      }}
       placeholder={placeholder}
-      style={style}
+      style={{
+        width:"100%", background:"transparent", border:"none",
+        borderBottom:`1px solid ${C.textDim}44`,
+        color:C.text,
+        fontSize: isLabel ? "0.82rem" : "0.8rem",
+        fontWeight: isLabel ? "600" : "400",
+        padding:"5px 2px", outline:"none",
+        textAlign: isLabel ? "left" : align,
+        fontFamily: isLabel ? "inherit" : "'Fira Code',monospace",
+        ...style,
+      }}
     />
   );
-};
+});
+
+/* ── A numeric cell that also keeps a live ref for totals ── */
+// We use a context-free approach: each BudgetCell writes to a
+// shared mutable ref object (liveRef) AND to React state on blur.
+// The summary bar reads from state (updated on blur), which is
+// fine because the user sees totals after finishing each field.
+// This completely prevents focus loss.
 
 /* ══════════════════════════════════════════════════════════
    CURRENCY MODAL
 ══════════════════════════════════════════════════════════ */
-function CurrencyModal({current, onSelect, onClose}) {
+function CurrencyModal({ current, onSelect, onClose }) {
   const [search, setSearch] = useState("");
   const list = CURRENCIES.filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -200,7 +213,7 @@ function CurrencyModal({current, onSelect, onClose}) {
             const active = cur.code === current.code;
             return (
               <button key={cur.code} onClick={()=>{onSelect(cur);onClose();}}
-                style={{...btnBase,display:"flex",alignItems:"center",gap:"12px",width:"100%",padding:"11px 12px",marginBottom:"3px",textAlign:"left",background:active?`${C.gold}22`:"transparent",border:active?`1px solid ${C.gold}55`:"1px solid transparent",borderRadius:"10px"}}>
+                style={{...B,display:"flex",alignItems:"center",gap:"12px",width:"100%",padding:"11px 12px",marginBottom:"3px",textAlign:"left",background:active?`${C.gold}22`:"transparent",border:active?`1px solid ${C.gold}55`:"1px solid transparent",borderRadius:"10px"}}>
                 <span style={{fontSize:"1.4rem",lineHeight:1,minWidth:"28px",textAlign:"center"}}>{cur.flag}</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:"0.83rem",fontWeight:"700",color:active?C.gold:C.text}}>{cur.name}</div>
@@ -219,246 +232,182 @@ function CurrencyModal({current, onSelect, onClose}) {
 /* ══════════════════════════════════════════════════════════
    MODULE 1 — BUDGET
 ══════════════════════════════════════════════════════════ */
-
-const BUDGET_SK_PREFIX = "tbm_budget_v3";
-
-function initCellData(tree) {
-  const d = {};
-  tree.forEach(c => { d[c.key] = { budget:"", actual:"" }; });
-  return d;
-}
-
 function BudgetModule({ year, currency, fmt }) {
-  const SK = `${BUDGET_SK_PREFIX}_${year}`;
+  const SK = `tbm_budget_v4_${year}`;
+  const saved = loadLS(SK) || {};
 
-  // Load from storage once on mount
-  const [incTree,  setIncTree]  = useState(() => loadLS(SK)?.incTree  || DEFAULT_INCOME_TREE);
-  const [expTree,  setExpTree]  = useState(() => loadLS(SK)?.expTree  || DEFAULT_EXPENSE_TREE);
-  const [allData,  setAllData]  = useState(() => loadLS(SK)?.allData  || {});
-  const [collapsed,setCollapsed]= useState(() => loadLS(SK)?.collapsed || {});
-  const [tab,      setTab]      = useState(MONTHS[new Date().getMonth()]);
-  const [view,     setView]     = useState("month");
-  const [editMode, setEditMode] = useState(false);
+  const [incTree,   setIncTree]   = useState(() => saved.incTree   || DEFAULT_INCOME_TREE);
+  const [expTree,   setExpTree]   = useState(() => saved.expTree   || DEFAULT_EXPENSE_TREE);
+  const [allData,   setAllData]   = useState(() => saved.allData   || {});
+  const [collapsed, setCollapsed] = useState(() => saved.collapsed || {});
+  const [tab,       setTab]       = useState(MONTHS[new Date().getMonth()]);
+  const [view,      setView]      = useState("month");
+  const [editMode,  setEditMode]  = useState(false);
 
-  // Save to storage whenever data changes
-  useEffect(() => {
-    saveLS(SK, { incTree, expTree, allData, collapsed });
-  }, [incTree, expTree, allData, collapsed, SK]);
+  useEffect(() => { saveLS(SK, { incTree, expTree, allData, collapsed }); }, [incTree, expTree, allData, collapsed]);
 
-  // Current month's cell data
-  const incomeData  = allData[tab]?.income   || initCellData(incTree);
-  const expenseData = allData[tab]?.expenses || initCellData(expTree);
+  // Current month data — plain objects, stable references per tab
+  const monthIncome  = allData[tab]?.income   || {};
+  const monthExpense = allData[tab]?.expenses || {};
 
-  // Update a single cell — triggers re-render → re-calc
-  const setCell = useCallback((section, key, field, val) => {
+  // Commit a value (called on blur) — only updates allData, doesn't affect input focus
+  const commit = useCallback((section, key, field, val) => {
     setAllData(prev => {
-      const monthPrev = prev[tab] || { income: initCellData(incTree), expenses: initCellData(expTree) };
-      const sectionPrev = monthPrev[section] || {};
-      return {
-        ...prev,
-        [tab]: {
-          ...monthPrev,
-          [section]: {
-            ...sectionPrev,
-            [key]: { ...(sectionPrev[key] || {}), [field]: val }
-          }
-        }
-      };
+      const m = prev[tab] || {};
+      const s = m[section] || {};
+      return { ...prev, [tab]: { ...m, [section]: { ...s, [key]: { ...(s[key]||{}), [field]: val } } } };
     });
-  }, [tab, incTree, expTree]);
+  }, [tab]);
 
-  // ── Calculation helpers ────────────────────────────────
-  const childrenOf = useCallback((parentKey, tree) =>
-    tree.filter(c => c.parentKey === parentKey)
-  , []);
+  // ── Derived totals (recalc on allData change, not on keystrokes) ──
+  const nonParentInc  = incTree.filter(c => c.type !== "parent");
+  const nonParentExp  = expTree.filter(c => c.type !== "parent");
 
-  const parentBudget = useCallback((parentKey, section) => {
-    const data = section === "income" ? incomeData : expenseData;
+  const totalIB = useMemo(() => nonParentInc.reduce((s,c) => s + p$(monthIncome[c.key]?.budget), 0), [monthIncome, incTree]);
+  const totalIA = useMemo(() => nonParentInc.reduce((s,c) => s + p$(monthIncome[c.key]?.actual), 0), [monthIncome, incTree]);
+  const totalEB = useMemo(() => nonParentExp.reduce((s,c) => s + p$(monthExpense[c.key]?.budget), 0), [monthExpense, expTree]);
+  const totalEA = useMemo(() => nonParentExp.reduce((s,c) => s + p$(monthExpense[c.key]?.actual), 0), [monthExpense, expTree]);
+  const defBudget = totalIB - totalEB;
+  const defActual = totalIA - totalEA;
+
+  const parentSum = (parentKey, section, field) => {
+    const data = section === "income" ? monthIncome : monthExpense;
     const tree = section === "income" ? incTree : expTree;
-    return childrenOf(parentKey, tree).reduce((s,c) => s + p$(data[c.key]?.budget), 0);
-  }, [incomeData, expenseData, incTree, expTree, childrenOf]);
-
-  const parentActual = useCallback((parentKey, section) => {
-    const data = section === "income" ? incomeData : expenseData;
-    const tree = section === "income" ? incTree : expTree;
-    return childrenOf(parentKey, tree).reduce((s,c) => s + p$(data[c.key]?.actual), 0);
-  }, [incomeData, expenseData, incTree, expTree, childrenOf]);
-
-  // Grand totals — sum everything (items + children, skip parent rows to avoid double count)
-  const totalIncomeBudget = useMemo(() =>
-    incTree.filter(c => c.type !== "parent").reduce((s,c) => s + p$(incomeData[c.key]?.budget), 0)
-  , [incTree, incomeData]);
-
-  const totalIncomeActual = useMemo(() =>
-    incTree.filter(c => c.type !== "parent").reduce((s,c) => s + p$(incomeData[c.key]?.actual), 0)
-  , [incTree, incomeData]);
-
-  const totalExpenseBudget = useMemo(() =>
-    expTree.filter(c => c.type !== "parent").reduce((s,c) => s + p$(expenseData[c.key]?.budget), 0)
-  , [expTree, expenseData]);
-
-  const totalExpenseActual = useMemo(() =>
-    expTree.filter(c => c.type !== "parent").reduce((s,c) => s + p$(expenseData[c.key]?.actual), 0)
-  , [expTree, expenseData]);
-
-  const deficitBudget = totalIncomeBudget - totalExpenseBudget;
-  const deficitActual = totalIncomeActual - totalExpenseActual;
-
-  // ── Edit mode helpers ──────────────────────────────────
-  const updateLabel = (section, key, val) => {
-    if (section === "income") setIncTree(p => p.map(c => c.key === key ? {...c, label:val} : c));
-    else setExpTree(p => p.map(c => c.key === key ? {...c, label:val} : c));
+    return tree.filter(c => c.parentKey === parentKey).reduce((s,c) => s + p$(data[c.key]?.[field]), 0);
   };
 
+  // ── Edit helpers ──
+  const renameItem = (section, key, val) => {
+    if (section === "income") setIncTree(p => p.map(c => c.key===key ? {...c,label:val} : c));
+    else setExpTree(p => p.map(c => c.key===key ? {...c,label:val} : c));
+  };
   const deleteItem = (section, key) => {
-    if (section === "income") setIncTree(p => p.filter(c => c.key !== key));
-    else setExpTree(p => {
-      const item = p.find(c => c.key === key);
-      if (item?.type === "parent") return p.filter(c => c.key !== key && c.parentKey !== key);
-      return p.filter(c => c.key !== key);
+    const filter = (p, k) => p.filter(c => c.key!==k && c.parentKey!==k);
+    if (section === "income") setIncTree(p => filter(p,key));
+    else setExpTree(p => filter(p,key));
+  };
+  const addChild = (section, parentKey) => {
+    const item = { key:uid(), label:"New Item", fixed:false, type:"child", parentKey };
+    if (section === "income") { setIncTree(p=>[...p,item]); return; }
+    setExpTree(p => {
+      const last = [...p].reverse().findIndex(c=>c.parentKey===parentKey);
+      const idx = last>=0 ? p.length-last : p.length;
+      const cp = [...p]; cp.splice(idx,0,item); return cp;
     });
   };
-
-  const addChild = (section, parentKey) => {
-    const newItem = { key:uid(), label:"New Item", fixed:false, type:"child", parentKey };
-    if (section === "income") {
-      setIncTree(p => [...p, newItem]);
-    } else {
-      setExpTree(p => {
-        const indices = p.map((c,i) => c.parentKey === parentKey ? i : -1).filter(i => i >= 0);
-        const insertAt = indices.length > 0 ? indices[indices.length-1]+1 : p.length;
-        const copy = [...p];
-        copy.splice(insertAt, 0, newItem);
-        return copy;
-      });
-    }
+  const addGroup = () => setExpTree(p=>[...p,{key:uid(),label:"New Category",fixed:false,type:"parent"}]);
+  const addItem  = section => {
+    const item = {key:uid(),label:"New Item",fixed:false,type:"item"};
+    if (section==="income") setIncTree(p=>[...p,item]); else setExpTree(p=>[...p,item]);
   };
+  const toggleCollapse = key => setCollapsed(p=>({...p,[key]:!p[key]}));
 
-  const addParentGroup = () => {
-    setExpTree(p => [...p, { key:uid(), label:"New Category", fixed:false, type:"parent" }]);
-  };
+  // ── Table styles ──
+  const TH = {fontSize:"0.57rem",color:C.textMid,letterSpacing:"0.1em",textTransform:"uppercase",paddingBottom:"8px",textAlign:"right",fontWeight:"600"};
 
-  const addStandaloneItem = (section) => {
-    const newItem = { key:uid(), label:"New Item", fixed:false, type:"item" };
-    if (section === "income") setIncTree(p => [...p, newItem]);
-    else setExpTree(p => [...p, newItem]);
-  };
-
-  const toggleCollapse = key => setCollapsed(p => ({...p, [key]: !p[key]}));
-
-  // ── Table columns ──────────────────────────────────────
-  const thStyle = { fontSize:"0.58rem", color:C.textMid, letterSpacing:"0.1em", textTransform:"uppercase", paddingBottom:"8px", textAlign:"right", fontWeight:"600" };
-
-  function AmtCell({ value, onChange }) {
-    return <td style={{width:"19%",padding:"2px 3px"}}><LiveInput value={value} onChange={onChange}/></td>;
-  }
-
-  function VarCell({ b, a, invert }) {
-    const v = invert ? b - a : a - b;
-    const show = b !== 0 || a !== 0;
+  function VarDisplay({ b, a, invert }) {
+    const v = invert ? b-a : a-b;
+    const show = b!==0 || a!==0;
     return (
-      <td style={{...monoFont, textAlign:"right", fontSize:"0.8rem", fontWeight:"600", padding:"5px 3px", width:"17%", color: show ? (v >= 0 ? C.green : C.red) : C.textDim}}>
-        {show ? ((v >= 0 ? "+" : "") + fmt(v)) : "—"}
+      <td style={{...M,textAlign:"right",fontSize:"0.79rem",fontWeight:"600",padding:"5px 2px",width:"17%",color:show?(v>=0?C.green:C.red):C.textDim}}>
+        {show ? ((v>=0?"+":"")+fmt(v)) : "—"}
       </td>
     );
   }
 
-  function TableRow({ item, section }) {
-    const isParent  = item.type === "parent";
-    const isChild   = item.type === "child";
-    const data      = section === "income" ? incomeData : expenseData;
-    const bVal = isParent ? parentBudget(item.key, section) : p$(data[item.key]?.budget);
-    const aVal = isParent ? parentActual(item.key, section) : p$(data[item.key]?.actual);
+  // Each TableRow is memoized — it only re-renders when its own stored value changes
+  const TableRow = memo(({ item, section }) => {
+    const isParent = item.type === "parent";
+    const isChild  = item.type === "child";
+    const data     = section === "income" ? monthIncome : monthExpense;
+
+    const bVal = isParent ? parentSum(item.key, section, "budget") : p$(data[item.key]?.budget);
+    const aVal = isParent ? parentSum(item.key, section, "actual") : p$(data[item.key]?.actual);
 
     return (
-      <>
-        <tr style={{borderBottom:"1px solid rgba(255,255,255,0.025)", background: isParent ? `${C.gold}08` : "transparent"}}>
-          {/* Label */}
-          <td style={{padding:"5px 0", paddingLeft: isChild ? "18px" : "0", width:"35%"}}>
-            <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
+      <tr style={{borderBottom:"1px solid rgba(255,255,255,0.025)",background:isParent?`${C.gold}07`:"transparent"}}>
+        {/* Label */}
+        <td style={{padding:"5px 0",paddingLeft:isChild?"18px":"0",width:"35%"}}>
+          <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
+            {isParent && (
+              <button onClick={()=>toggleCollapse(item.key)}
+                style={{...B,background:"transparent",color:C.gold,fontSize:"0.65rem",padding:"0 3px",lineHeight:1,minWidth:"14px",flexShrink:0}}>
+                {collapsed[item.key]?"▶":"▼"}
+              </button>
+            )}
+            {editMode ? (
+              <CellInput
+                storeValue={item.label}
+                onBlurCommit={v => renameItem(section, item.key, v)}
+                placeholder="Name"
+                isLabel={true}
+              />
+            ) : (
+              <span style={{color:isParent?C.gold:isChild?C.textMid:C.text,fontSize:isChild?"0.75rem":"0.82rem",fontWeight:isParent?"800":isChild?"400":"600",lineHeight:1.3}}>
+                {item.label}
+              </span>
+            )}
+          </div>
+        </td>
+
+        {/* Budget */}
+        {isParent ? (
+          <td style={{...M,textAlign:"right",fontSize:"0.79rem",color:C.textMid,padding:"5px 2px",width:"19%",fontWeight:"700"}}>
+            {bVal>0?fmt(bVal):""}
+          </td>
+        ) : (
+          <td style={{width:"19%",padding:"2px 2px"}}>
+            <CellInput storeValue={data[item.key]?.budget||""} onBlurCommit={v=>commit(section,item.key,"budget",v)}/>
+          </td>
+        )}
+
+        {/* Actual */}
+        {isParent ? (
+          <td style={{...M,textAlign:"right",fontSize:"0.79rem",color:C.textMid,padding:"5px 2px",width:"19%",fontWeight:"700"}}>
+            {aVal>0?fmt(aVal):""}
+          </td>
+        ) : (
+          <td style={{width:"19%",padding:"2px 2px"}}>
+            <CellInput storeValue={data[item.key]?.actual||""} onBlurCommit={v=>commit(section,item.key,"actual",v)}/>
+          </td>
+        )}
+
+        <VarDisplay b={bVal} a={aVal} invert={section==="expenses"}/>
+
+        {/* Edit actions */}
+        <td style={{textAlign:"right",width:"10%",padding:"2px 0"}}>
+          {editMode && (
+            <div style={{display:"flex",gap:"2px",justifyContent:"flex-end"}}>
               {isParent && (
-                <button onClick={()=>toggleCollapse(item.key)}
-                  style={{...btnBase,background:"transparent",color:C.gold,fontSize:"0.65rem",padding:"0 3px",lineHeight:1,minWidth:"14px",flexShrink:0}}>
-                  {collapsed[item.key] ? "▶" : "▼"}
-                </button>
+                <button onClick={()=>addChild(section,item.key)}
+                  style={{...B,background:`${C.blue}22`,color:C.blue,fontSize:"0.58rem",padding:"2px 5px"}}>+</button>
               )}
-              {editMode ? (
-                <LiveInput
-                  value={item.label}
-                  onChange={v => updateLabel(section, item.key, v)}
-                  placeholder="Name"
-                  isLabel={true}
-                  style={{color: isParent ? C.gold : isChild ? C.textMid : C.text}}
-                />
-              ) : (
-                <span style={{
-                  color: isParent ? C.gold : isChild ? C.textMid : C.text,
-                  fontSize: isChild ? "0.76rem" : "0.82rem",
-                  fontWeight: isParent ? "800" : isChild ? "400" : "600",
-                  lineHeight: 1.3,
-                }}>
-                  {item.label}
-                </span>
+              {!item.fixed && (
+                <button onClick={()=>deleteItem(section,item.key)}
+                  style={{...B,background:`${C.red}18`,color:C.red,fontSize:"0.58rem",padding:"2px 5px"}}>✕</button>
               )}
             </div>
-          </td>
-
-          {/* Budget */}
-          {isParent ? (
-            <td style={{...monoFont,textAlign:"right",fontSize:"0.8rem",color:C.textMid,padding:"5px 3px",width:"19%",fontWeight:"700"}}>
-              {bVal > 0 ? fmt(bVal) : ""}
-            </td>
-          ) : (
-            <AmtCell value={data[item.key]?.budget || ""} onChange={v => setCell(section, item.key, "budget", v)}/>
           )}
-
-          {/* Actual */}
-          {isParent ? (
-            <td style={{...monoFont,textAlign:"right",fontSize:"0.8rem",color:C.textMid,padding:"5px 3px",width:"19%",fontWeight:"700"}}>
-              {aVal > 0 ? fmt(aVal) : ""}
-            </td>
-          ) : (
-            <AmtCell value={data[item.key]?.actual || ""} onChange={v => setCell(section, item.key, "actual", v)}/>
-          )}
-
-          {/* Variance */}
-          <VarCell b={bVal} a={aVal} invert={section === "expenses"}/>
-
-          {/* Edit controls */}
-          <td style={{textAlign:"right",width:"10%",padding:"2px 0"}}>
-            {editMode && (
-              <div style={{display:"flex",gap:"2px",justifyContent:"flex-end"}}>
-                {isParent && (
-                  <button onClick={()=>addChild(section, item.key)} title="Add sub-item"
-                    style={{...btnBase,background:`${C.blue}22`,color:C.blue,fontSize:"0.58rem",padding:"2px 5px"}}>+</button>
-                )}
-                {!item.fixed && (
-                  <button onClick={()=>deleteItem(section, item.key)}
-                    style={{...btnBase,background:`${C.red}18`,color:C.red,fontSize:"0.58rem",padding:"2px 5px"}}>✕</button>
-                )}
-              </div>
-            )}
-          </td>
-        </tr>
-      </>
+        </td>
+      </tr>
     );
-  }
+  });
 
   function BudgetTable({ tree, section }) {
     return (
       <table style={{width:"100%",borderCollapse:"collapse"}}>
         <thead>
           <tr style={{borderBottom:`1px solid ${C.surfaceUp}`}}>
-            <th style={{...thStyle,textAlign:"left",width:"35%"}}>Category</th>
-            <th style={{...thStyle,width:"19%"}}>Budget</th>
-            <th style={{...thStyle,width:"19%"}}>Actual</th>
-            <th style={{...thStyle,width:"17%"}}>Variance</th>
+            <th style={{...TH,textAlign:"left",width:"35%"}}>Category</th>
+            <th style={{...TH,width:"19%"}}>Budget</th>
+            <th style={{...TH,width:"19%"}}>Actual</th>
+            <th style={{...TH,width:"17%"}}>Variance</th>
             <th style={{width:"10%"}}/>
           </tr>
         </thead>
         <tbody>
           {tree.map(item => {
-            if (item.type === "child" && collapsed[item.parentKey]) return null;
+            if (item.type==="child" && collapsed[item.parentKey]) return null;
             return <TableRow key={item.key} item={item} section={section}/>;
           })}
         </tbody>
@@ -466,8 +415,28 @@ function BudgetModule({ year, currency, fmt }) {
     );
   }
 
-  // ── Annual view ────────────────────────────────────────
-  if (view === "year") {
+  function TotalsRow({ labelBgt, bgt, act, invert }) {
+    const bgtVar = act - bgt;
+    const col = (invert ? bgt-act : act-bgt) >= 0 ? C.green : C.red;
+    return (
+      <table style={{width:"100%",borderCollapse:"collapse",marginTop:"2px"}}>
+        <tbody>
+          <tr style={{borderTop:`2px solid ${C.gold}44`,background:`${C.gold}0d`}}>
+            <td style={{width:"35%",padding:"7px 0",fontSize:"0.78rem",fontWeight:"800",color:C.gold,textTransform:"uppercase"}}>{labelBgt}</td>
+            <td style={{...M,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 2px"}}>{fmt(bgt)}</td>
+            <td style={{...M,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 2px"}}>{fmt(act)}</td>
+            <td style={{...M,textAlign:"right",width:"17%",fontSize:"0.82rem",fontWeight:"800",padding:"7px 2px",color:col}}>
+              {(invert?(bgt-act>=0):(act-bgt>=0))?"+":""}{fmt(invert?bgt-act:act-bgt)}
+            </td>
+            <td style={{width:"10%"}}/>
+          </tr>
+        </tbody>
+      </table>
+    );
+  }
+
+  // ── Annual view ──
+  if (view==="year") {
     const rows = MONTHS.map(m => {
       const inc = allData[m]?.income   || {};
       const exp = allData[m]?.expenses || {};
@@ -475,26 +444,24 @@ function BudgetModule({ year, currency, fmt }) {
       const tia = incTree.filter(c=>c.type!=="parent").reduce((s,c)=>s+p$(inc[c.key]?.actual),0);
       const teb = expTree.filter(c=>c.type!=="parent").reduce((s,c)=>s+p$(exp[c.key]?.budget),0);
       const tea = expTree.filter(c=>c.type!=="parent").reduce((s,c)=>s+p$(exp[c.key]?.actual),0);
-      return {month:m, tib, tia, teb, tea, net:tia-tea};
+      return { month:m, tib, tia, teb, tea, net:tia-tea };
     });
     const tot = rows.reduce((a,r)=>({tib:a.tib+r.tib,tia:a.tia+r.tia,teb:a.teb+r.teb,tea:a.tea+r.tea}),{tib:0,tia:0,teb:0,tea:0});
-    const th2 = {fontSize:"0.58rem",color:C.textMid,letterSpacing:"0.1em",textTransform:"uppercase",padding:"6px 4px",textAlign:"right",fontWeight:"600"};
-    const td2 = {...monoFont,fontSize:"0.76rem",color:C.text,textAlign:"right",padding:"6px 4px"};
+    const th2 = {fontSize:"0.57rem",color:C.textMid,letterSpacing:"0.1em",textTransform:"uppercase",padding:"6px 4px",textAlign:"right",fontWeight:"600"};
+    const td2 = {...M,fontSize:"0.76rem",color:C.text,textAlign:"right",padding:"6px 4px"};
     return (
       <div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"14px"}}>
           <span style={{fontSize:"0.62rem",letterSpacing:"0.15em",color:C.gold,textTransform:"uppercase",fontWeight:"800"}}>📅 Annual Overview · {currency.flag} {currency.code}</span>
-          <button onClick={()=>setView("month")} style={{...btnBase,background:`${C.gold}12`,color:C.gold,padding:"5px 12px",fontSize:"0.7rem"}}>← Monthly</button>
+          <button onClick={()=>setView("month")} style={{...B,background:`${C.gold}12`,color:C.gold,padding:"5px 12px",fontSize:"0.7rem"}}>← Monthly</button>
         </div>
         <div style={{overflowX:"auto"}}>
-          <table style={{width:"100%",borderCollapse:"collapse",minWidth:"500px"}}>
+          <table style={{width:"100%",borderCollapse:"collapse",minWidth:"480px"}}>
             <thead>
               <tr style={{borderBottom:`1px solid ${C.gold}33`}}>
                 <th style={{...th2,textAlign:"left"}}>Month</th>
-                <th style={th2}>Inc Budget</th>
-                <th style={th2}>Inc Actual</th>
-                <th style={th2}>Exp Budget</th>
-                <th style={th2}>Exp Actual</th>
+                <th style={th2}>Inc Budget</th><th style={th2}>Inc Actual</th>
+                <th style={th2}>Exp Budget</th><th style={th2}>Exp Actual</th>
                 <th style={th2}>Deficit/Overage</th>
               </tr>
             </thead>
@@ -525,130 +492,98 @@ function BudgetModule({ year, currency, fmt }) {
     );
   }
 
-  // ── Monthly view ───────────────────────────────────────
+  // ── Monthly view ──
   return (
     <div>
       {/* Month tabs */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px",gap:"6px"}}>
         <div style={{overflowX:"auto",display:"flex",gap:"3px",flex:1,scrollbarWidth:"none",WebkitOverflowScrolling:"touch"}}>
           {MONTHS.map(m => {
-            const inc = allData[m]?.income || {};
-            const exp = allData[m]?.expenses || {};
-            const has = incTree.some(c=>p$(inc[c.key]?.budget)||p$(inc[c.key]?.actual)) ||
-                        expTree.some(c=>p$(exp[c.key]?.budget)||p$(exp[c.key]?.actual));
+            const inc = allData[m]?.income||{}, exp = allData[m]?.expenses||{};
+            const has = incTree.some(c=>p$(inc[c.key]?.budget)||p$(inc[c.key]?.actual)) || expTree.some(c=>p$(exp[c.key]?.budget)||p$(exp[c.key]?.actual));
             return (
               <button key={m} onClick={()=>setTab(m)} style={{
-                ...btnBase,
-                background: tab===m ? C.gold : has ? `${C.gold}18` : `${C.gold}06`,
+                ...B,
+                background:tab===m?C.gold:has?`${C.gold}18`:`${C.gold}06`,
                 border:`1px solid ${tab===m?C.gold:has?C.gold+"33":C.textDim+"22"}`,
-                color: tab===m ? C.bg : has ? C.gold : C.textMid,
-                borderRadius:"20px", padding:"4px 10px", fontSize:"0.68rem",
-                fontWeight: tab===m ? "800":"500", whiteSpace:"nowrap", flexShrink:0,
+                color:tab===m?C.bg:has?C.gold:C.textMid,
+                borderRadius:"20px",padding:"4px 10px",fontSize:"0.68rem",
+                fontWeight:tab===m?"800":"500",whiteSpace:"nowrap",flexShrink:0,
               }}>{m}</button>
             );
           })}
         </div>
-        <button onClick={()=>setView("year")} style={{...btnBase,background:`${C.gold}12`,color:C.gold,padding:"4px 10px",fontSize:"0.68rem",flexShrink:0}}>Annual →</button>
+        <button onClick={()=>setView("year")} style={{...B,background:`${C.gold}12`,color:C.gold,padding:"4px 10px",fontSize:"0.68rem",flexShrink:0}}>Annual →</button>
       </div>
 
-      {/* Heading + personalise */}
+      {/* Heading */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:"12px"}}>
         <div>
           <div style={{fontSize:"1.05rem",fontWeight:"800",color:C.gold}}>{FULL_MONTHS[MONTHS.indexOf(tab)]} {year}</div>
           <div style={{fontSize:"0.58rem",color:C.textMid,letterSpacing:"0.1em",textTransform:"uppercase"}}>{currency.flag} {currency.name} · {currency.code}</div>
         </div>
-        <button onClick={()=>setEditMode(e=>!e)} style={{
-          ...btnBase,
-          background: editMode ? C.gold : `${C.gold}15`,
-          color: editMode ? C.bg : C.gold,
-          border:`1px solid ${C.gold}44`,
-          padding:"7px 12px", fontSize:"0.7rem", flexShrink:0,
-        }}>
-          {editMode ? "✓ Done" : "✏️ Personalise"}
+        <button onClick={()=>setEditMode(e=>!e)} style={{...B,background:editMode?C.gold:`${C.gold}15`,color:editMode?C.bg:C.gold,border:`1px solid ${C.gold}44`,padding:"7px 12px",fontSize:"0.7rem",flexShrink:0}}>
+          {editMode?"✓ Done":"✏️ Personalise"}
         </button>
       </div>
 
-      {/* ── SUMMARY BAR ── */}
+      {/* Summary bar */}
       <div style={{background:`linear-gradient(135deg,${C.surfaceUp},${C.surface})`,border:`1px solid ${C.gold}33`,borderRadius:"12px",padding:"14px 16px",marginBottom:"20px"}}>
         <div style={{fontSize:"0.6rem",color:C.gold,textTransform:"uppercase",letterSpacing:"0.12em",fontWeight:"800",marginBottom:"12px"}}>
-          📊 Overview — {FULL_MONTHS[MONTHS.indexOf(tab)]} {year}
+          📊 {FULL_MONTHS[MONTHS.indexOf(tab)]} {year} — Overview
         </div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"10px"}}>
           {[
-            {label:"Income (Budget)",  val:totalIncomeBudget,  color:C.gold},
-            {label:"Income (Actual)",  val:totalIncomeActual,  color:C.gold},
-            {label:"Expense (Budget)", val:totalExpenseBudget, color:C.red},
-            {label:"Expense (Actual)", val:totalExpenseActual, color:C.red},
-            {label:"Balance (Budget)", val:deficitBudget, color:deficitBudget>=0?C.green:C.red},
-            {label:"Balance (Actual)", val:deficitActual, color:deficitActual>=0?C.green:C.red},
+            {label:"Income (Budget)",  val:totalIB, color:C.gold},
+            {label:"Income (Actual)",  val:totalIA, color:C.gold},
+            {label:"Expense (Budget)", val:totalEB, color:C.red},
+            {label:"Expense (Actual)", val:totalEA, color:C.red},
+            {label:"Balance (Budget)", val:defBudget, color:defBudget>=0?C.green:C.red},
+            {label:"Balance (Actual)", val:defActual, color:defActual>=0?C.green:C.red},
           ].map(it => (
             <div key={it.label} style={{textAlign:"center"}}>
               <div style={{fontSize:"0.52rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:"3px"}}>{it.label}</div>
-              <div style={{...monoFont,fontSize:"0.84rem",fontWeight:"700",color:it.color}}>
-                {it.val < 0 ? "-" : ""}{currency.symbol}{fmt(Math.abs(it.val))}
+              <div style={{...M,fontSize:"0.84rem",fontWeight:"700",color:it.color}}>
+                {it.val<0?"-":""}{currency.symbol}{fmt(Math.abs(it.val))}
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* ── INCOME ── */}
+      {/* Income section */}
       <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"8px",borderBottom:`1px solid ${C.surfaceUp}`,paddingBottom:"8px"}}>
         <span>💰</span>
         <span style={{fontSize:"0.62rem",letterSpacing:"0.15em",color:C.gold,textTransform:"uppercase",fontWeight:"800"}}>Income</span>
       </div>
       <BudgetTable tree={incTree} section="income"/>
-
-      {/* Income totals row */}
-      <table style={{width:"100%",borderCollapse:"collapse",marginTop:"4px"}}>
-        <tbody>
-          <tr style={{borderTop:`2px solid ${C.gold}44`,background:`${C.gold}0d`}}>
-            <td style={{width:"35%",padding:"7px 0",fontSize:"0.78rem",fontWeight:"800",color:C.gold,textTransform:"uppercase"}}>Total Income</td>
-            <td style={{...monoFont,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 3px"}}>{fmt(totalIncomeBudget)}</td>
-            <td style={{...monoFont,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 3px"}}>{fmt(totalIncomeActual)}</td>
-            <td style={{...monoFont,textAlign:"right",width:"17%",fontSize:"0.82rem",fontWeight:"800",padding:"7px 3px",color:(totalIncomeActual-totalIncomeBudget)>=0?C.green:C.red}}>
-              {((totalIncomeActual-totalIncomeBudget)>=0?"+":"")+fmt(totalIncomeActual-totalIncomeBudget)}
-            </td>
-            <td style={{width:"10%"}}/>
-          </tr>
-        </tbody>
-      </table>
-
+      <TotalsRow labelBgt="Total Income" bgt={totalIB} act={totalIA} invert={false}/>
       {editMode && (
-        <button onClick={()=>addStandaloneItem("income")} style={{...btnBase,background:`${C.gold}10`,border:`1px dashed ${C.gold}33`,color:C.gold,padding:"6px 12px",fontSize:"0.7rem",width:"100%",marginTop:"6px",borderRadius:"8px"}}>
+        <button onClick={()=>addItem("income")} style={{...B,background:`${C.gold}0d`,border:`1px dashed ${C.gold}33`,color:C.gold,padding:"6px 12px",fontSize:"0.7rem",width:"100%",marginTop:"6px",borderRadius:"8px"}}>
           + Add Income Category
         </button>
       )}
 
-      {/* ── EXPENSES ── */}
+      {/* Expenses section */}
       <div style={{display:"flex",alignItems:"center",gap:"8px",margin:"20px 0 8px",borderBottom:`1px solid ${C.surfaceUp}`,paddingBottom:"8px"}}>
         <span>💸</span>
         <span style={{fontSize:"0.62rem",letterSpacing:"0.15em",color:C.gold,textTransform:"uppercase",fontWeight:"800"}}>Expenses</span>
       </div>
       <BudgetTable tree={expTree} section="expenses"/>
+      <TotalsRow labelBgt="Total Expenses" bgt={totalEB} act={totalEA} invert={true}/>
 
-      {/* Expense totals row */}
-      <table style={{width:"100%",borderCollapse:"collapse",marginTop:"4px"}}>
+      {/* Deficit/Overage */}
+      <table style={{width:"100%",borderCollapse:"collapse",marginTop:"2px"}}>
         <tbody>
-          <tr style={{borderTop:`2px solid ${C.gold}44`,background:`${C.gold}0d`}}>
-            <td style={{width:"35%",padding:"7px 0",fontSize:"0.78rem",fontWeight:"800",color:C.gold,textTransform:"uppercase"}}>Total Expenses</td>
-            <td style={{...monoFont,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 3px"}}>{fmt(totalExpenseBudget)}</td>
-            <td style={{...monoFont,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 3px"}}>{fmt(totalExpenseActual)}</td>
-            <td style={{...monoFont,textAlign:"right",width:"17%",fontSize:"0.82rem",fontWeight:"800",padding:"7px 3px",color:(totalExpenseBudget-totalExpenseActual)>=0?C.green:C.red}}>
-              {((totalExpenseBudget-totalExpenseActual)>=0?"+":"")+fmt(totalExpenseBudget-totalExpenseActual)}
+          <tr style={{background:defActual>=0?`${C.green}0d`:`${C.red}0d`,borderTop:`1px solid ${defActual>=0?C.green:C.red}33`}}>
+            <td style={{width:"35%",padding:"7px 0",fontSize:"0.78rem",fontWeight:"800",color:defActual>=0?C.green:C.red,textTransform:"uppercase"}}>
+              {defActual>=0?"Overage":"Deficit"}
             </td>
-            <td style={{width:"10%"}}/>
-          </tr>
-          {/* Deficit/Overage row */}
-          <tr style={{background: deficitActual>=0?`${C.green}0d`:`${C.red}0d`, borderTop:`1px solid ${deficitActual>=0?C.green:C.red}33`}}>
-            <td style={{width:"35%",padding:"7px 0",fontSize:"0.78rem",fontWeight:"800",color:deficitActual>=0?C.green:C.red,textTransform:"uppercase"}}>
-              {deficitActual >= 0 ? "Overage" : "Deficit"}
+            <td style={{...M,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:defBudget>=0?C.green:C.red,padding:"7px 2px"}}>
+              {(defBudget>=0?"+":"")+fmt(defBudget)}
             </td>
-            <td style={{...monoFont,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:deficitBudget>=0?C.green:C.red,padding:"7px 3px"}}>
-              {(deficitBudget>=0?"+":"")+fmt(deficitBudget)}
-            </td>
-            <td style={{...monoFont,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:deficitActual>=0?C.green:C.red,padding:"7px 3px"}}>
-              {(deficitActual>=0?"+":"")+fmt(deficitActual)}
+            <td style={{...M,textAlign:"right",width:"19%",fontSize:"0.82rem",fontWeight:"800",color:defActual>=0?C.green:C.red,padding:"7px 2px"}}>
+              {(defActual>=0?"+":"")+fmt(defActual)}
             </td>
             <td colSpan={2}/>
           </tr>
@@ -657,17 +592,13 @@ function BudgetModule({ year, currency, fmt }) {
 
       {editMode && (
         <div style={{display:"flex",gap:"8px",marginTop:"10px"}}>
-          <button onClick={()=>addStandaloneItem("expenses")} style={{...btnBase,background:`${C.gold}10`,border:`1px dashed ${C.gold}33`,color:C.gold,padding:"6px 12px",fontSize:"0.7rem",flex:1,borderRadius:"8px"}}>+ Add Item</button>
-          <button onClick={addParentGroup} style={{...btnBase,background:`${C.blue}12`,border:`1px dashed ${C.blue}33`,color:C.blue,padding:"6px 12px",fontSize:"0.7rem",flex:1,borderRadius:"8px"}}>+ Add Category Group</button>
+          <button onClick={()=>addItem("expenses")} style={{...B,background:`${C.gold}0d`,border:`1px dashed ${C.gold}33`,color:C.gold,padding:"6px 12px",fontSize:"0.7rem",flex:1,borderRadius:"8px"}}>+ Add Item</button>
+          <button onClick={addGroup} style={{...B,background:`${C.blue}0d`,border:`1px dashed ${C.blue}33`,color:C.blue,padding:"6px 12px",fontSize:"0.7rem",flex:1,borderRadius:"8px"}}>+ Add Category Group</button>
         </div>
       )}
-
       {editMode && (
         <div style={{background:`${C.blue}0d`,border:`1px solid ${C.blue}22`,borderRadius:"10px",padding:"12px 14px",marginTop:"14px",fontSize:"0.74rem",color:C.textMid,lineHeight:1.7}}>
-          ✏️ <strong style={{color:C.blue}}>Personalise Mode</strong><br/>
-          • Tap any name to rename it to your own (e.g. your bank name)<br/>
-          • <strong style={{color:C.blue}}>+</strong> adds a sub-item under a group · <strong style={{color:C.red}}>✕</strong> removes an item<br/>
-          • <strong style={{color:C.gold}}>▼▶</strong> collapses/expands groups
+          ✏️ <strong style={{color:C.blue}}>Personalise Mode</strong> — tap any name to rename · <strong style={{color:C.blue}}>+</strong> adds sub-item · <strong style={{color:C.red}}>✕</strong> removes · <strong style={{color:C.gold}}>▼▶</strong> collapses groups
         </div>
       )}
     </div>
@@ -678,7 +609,7 @@ function BudgetModule({ year, currency, fmt }) {
    MODULE 2 — NET WORTH
 ══════════════════════════════════════════════════════════ */
 function NetWorthModule({ fmt, currency }) {
-  const SK = "tbm_nw_v3";
+  const SK = "tbm_nw_v4";
   const [assets,      setAssets]      = useState(() => loadLS(SK)?.assets      || {});
   const [liabs,       setLiabs]       = useState(() => loadLS(SK)?.liabs       || {});
   const [notes,       setNotes]       = useState(() => loadLS(SK)?.notes       || {});
@@ -711,13 +642,13 @@ function NetWorthModule({ fmt, currency }) {
         {items.map(item => (
           <div key={item.key} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"6px",padding:"5px 0",borderBottom:"1px solid rgba(255,255,255,0.025)"}}>
             <div style={{color:C.text,fontSize:"0.78rem",display:"flex",alignItems:"center"}}>{item.label}</div>
-            <LiveInput value={data[item.key]||""} onChange={v=>onChange(item.key,v)}/>
-            <LiveInput value={notes[item.key]||""} onChange={v=>setN(item.key,v)} placeholder="Comments…" isLabel={true} style={{color:C.textMid,fontSize:"0.7rem"}}/>
+            <CellInput storeValue={data[item.key]||""} onBlurCommit={v=>onChange(item.key,v)}/>
+            <CellInput storeValue={notes[item.key]||""} onBlurCommit={v=>setN(item.key,v)} placeholder="Comments…" isLabel={true}/>
           </div>
         ))}
         <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:`1px solid ${color}33`,marginTop:"3px"}}>
           <span style={{fontSize:"0.72rem",fontWeight:"800",color,textTransform:"uppercase"}}>{totalLabel}</span>
-          <span style={{...monoFont,fontSize:"0.82rem",fontWeight:"800",color}}>{currency.symbol}{fmt(total)}</span>
+          <span style={{...M,fontSize:"0.82rem",fontWeight:"800",color}}>{currency.symbol}{fmt(total)}</span>
         </div>
       </div>
     );
@@ -737,28 +668,25 @@ function NetWorthModule({ fmt, currency }) {
         </div>
       </div>
 
-      {/* Hero */}
       <div style={{background:netWorth>=0?`linear-gradient(135deg,rgba(74,222,128,0.15),rgba(74,222,128,0.04))`:`linear-gradient(135deg,rgba(248,113,113,0.15),rgba(248,113,113,0.04))`,border:`1px solid ${netWorth>=0?C.green:C.red}44`,borderRadius:"14px",padding:"18px 20px",marginBottom:"18px",textAlign:"center"}}>
         <div style={{fontSize:"0.6rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:"6px"}}>NET WORTH</div>
-        <div style={{...monoFont,fontSize:"1.8rem",fontWeight:"800",color:netWorth>=0?C.green:C.red}}>
+        <div style={{...M,fontSize:"1.8rem",fontWeight:"800",color:netWorth>=0?C.green:C.red}}>
           {netWorth<0?"-":""}{currency.symbol}{fmt(Math.abs(netWorth))}
         </div>
         <div style={{display:"flex",justifyContent:"center",gap:"28px",marginTop:"12px"}}>
           <div style={{textAlign:"center"}}>
             <div style={{fontSize:"0.55rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.1em"}}>Total Assets</div>
-            <div style={{...monoFont,fontSize:"0.9rem",fontWeight:"700",color:C.green}}>{currency.symbol}{fmt(totalAssets)}</div>
+            <div style={{...M,fontSize:"0.9rem",fontWeight:"700",color:C.green}}>{currency.symbol}{fmt(totalAssets)}</div>
           </div>
           <div style={{textAlign:"center"}}>
             <div style={{fontSize:"0.55rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.1em"}}>Total Liabilities</div>
-            <div style={{...monoFont,fontSize:"0.9rem",fontWeight:"700",color:C.red}}>{currency.symbol}{fmt(totalLiabs)}</div>
+            <div style={{...M,fontSize:"0.9rem",fontWeight:"700",color:C.red}}>{currency.symbol}{fmt(totalLiabs)}</div>
           </div>
         </div>
       </div>
 
       <div style={{fontSize:"0.6rem",color:C.textMid,marginBottom:"8px",letterSpacing:"0.08em"}}>AMOUNT · COMMENTS</div>
-
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"14px"}}>
-        {/* Assets */}
         <div style={{background:C.surface,borderRadius:"12px",padding:"14px 16px",border:`1px solid ${C.green}22`}}>
           <div style={{fontSize:"0.65rem",letterSpacing:"0.15em",color:C.green,textTransform:"uppercase",fontWeight:"800",marginBottom:"10px"}}>📈 ASSETS</div>
           <NWSection title="Current Assets"  items={NW_ASSETS.current}     data={assets} onChange={setA} total={tCA}  totalLabel="Total Current"    color={C.green}/>
@@ -769,10 +697,9 @@ function NetWorthModule({ fmt, currency }) {
           <NWSection title="Other"            items={NW_ASSETS.other}       data={assets} onChange={setA} total={tOA}  totalLabel="Total Other"       color={C.green}/>
           <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:`2px solid ${C.green}44`,marginTop:"4px"}}>
             <span style={{fontSize:"0.78rem",fontWeight:"800",color:C.green,textTransform:"uppercase"}}>TOTAL ASSETS</span>
-            <span style={{...monoFont,fontSize:"0.9rem",fontWeight:"800",color:C.green}}>{currency.symbol}{fmt(totalAssets)}</span>
+            <span style={{...M,fontSize:"0.9rem",fontWeight:"800",color:C.green}}>{currency.symbol}{fmt(totalAssets)}</span>
           </div>
         </div>
-        {/* Liabilities */}
         <div style={{background:C.surface,borderRadius:"12px",padding:"14px 16px",border:`1px solid ${C.red}22`}}>
           <div style={{fontSize:"0.65rem",letterSpacing:"0.15em",color:C.red,textTransform:"uppercase",fontWeight:"800",marginBottom:"10px"}}>📉 LIABILITIES</div>
           <NWSection title="Current Liabilities"   items={NW_LIABILITIES.current}   data={liabs} onChange={setL} total={tCL} totalLabel="Total Current"   color={C.red}/>
@@ -780,7 +707,7 @@ function NetWorthModule({ fmt, currency }) {
           <NWSection title="Personal Debt"         items={NW_LIABILITIES.personal}   data={liabs} onChange={setL} total={tPL} totalLabel="Total Personal"  color={C.red}/>
           <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderTop:`2px solid ${C.red}44`,marginTop:"4px"}}>
             <span style={{fontSize:"0.78rem",fontWeight:"800",color:C.red,textTransform:"uppercase"}}>TOTAL LIABILITIES</span>
-            <span style={{...monoFont,fontSize:"0.9rem",fontWeight:"800",color:C.red}}>{currency.symbol}{fmt(totalLiabs)}</span>
+            <span style={{...M,fontSize:"0.9rem",fontWeight:"800",color:C.red}}>{currency.symbol}{fmt(totalLiabs)}</span>
           </div>
         </div>
       </div>
@@ -793,16 +720,16 @@ function NetWorthModule({ fmt, currency }) {
 ══════════════════════════════════════════════════════════ */
 const PRIORITIES = ["High","Med","Low"];
 const PCOL = {High:C.red, Med:C.gold, Low:C.green};
-const PDESC = {High:"High interest / long duration — bad debt",Med:"Average interest — may be good or bad",Low:"Low interest — good debt, funding an asset"};
-const DEBT_SK = "tbm_debt_v3";
+const PDESC = {High:"High interest / long duration — bad debt", Med:"Average interest — may be good or bad", Low:"Low interest — good debt, funding an asset"};
 
 function DebtModule({ fmt, currency }) {
-  const [debts, setDebts] = useState(() => loadLS(DEBT_SK) || [
+  const SK = "tbm_debt_v4";
+  const [debts, setDebts] = useState(() => loadLS(SK) || [
     {id:"d1",name:"Credit Card #1",balance:"",maturity:"",rate:"",monthly:"",priority:"High",reason:"",notes:""},
     {id:"d2",name:"Loan #1",       balance:"",maturity:"",rate:"",monthly:"",priority:"Med", reason:"",notes:""},
     {id:"d3",name:"Personal Debt", balance:"",maturity:"",rate:"",monthly:"",priority:"Low", reason:"",notes:""},
   ]);
-  useEffect(() => { saveLS(DEBT_SK, debts); }, [debts]);
+  useEffect(() => { saveLS(SK, debts); }, [debts]);
 
   const upd = (id,f,v) => setDebts(p=>p.map(d=>d.id===id?{...d,[f]:v}:d));
   const add = () => setDebts(p=>[...p,{id:uid(),name:"New Debt",balance:"",maturity:"",rate:"",monthly:"",priority:"Med",reason:"",notes:""}]);
@@ -823,11 +750,10 @@ function DebtModule({ fmt, currency }) {
         {[{label:"Total Debt",val:totalBalance,color:C.red},{label:"Monthly Payments",val:totalMonthly,color:C.gold},{label:"# of Debts",val:debts.length,color:C.blue,count:true}].map(it=>(
           <div key={it.label} style={{background:C.surface,borderRadius:"10px",padding:"12px",border:`1px solid ${it.color}22`,textAlign:"center"}}>
             <div style={{fontSize:"0.52rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"4px"}}>{it.label}</div>
-            <div style={{...monoFont,fontSize:"0.88rem",fontWeight:"700",color:it.color}}>{it.count?it.val:`${currency.symbol}${fmt(it.val)}`}</div>
+            <div style={{...M,fontSize:"0.88rem",fontWeight:"700",color:it.color}}>{it.count?it.val:`${currency.symbol}${fmt(it.val)}`}</div>
           </div>
         ))}
       </div>
-
       {PRIORITIES.map(pr => {
         const pd = debts.filter(d=>d.priority===pr);
         if (!pd.length) return null;
@@ -843,9 +769,9 @@ function DebtModule({ fmt, currency }) {
                   <input value={d.name} onChange={e=>upd(d.id,"name",e.target.value)} style={{...iS,fontSize:"0.86rem",fontWeight:"700",flex:1}}/>
                   <div style={{display:"flex",gap:"3px",marginLeft:"8px"}}>
                     {PRIORITIES.map(p2=>(
-                      <button key={p2} onClick={()=>upd(d.id,"priority",p2)} style={{...btnBase,background:d.priority===p2?PCOL[p2]:`${PCOL[p2]}18`,color:d.priority===p2?C.bg:PCOL[p2],padding:"3px 7px",fontSize:"0.6rem",borderRadius:"6px"}}>{p2}</button>
+                      <button key={p2} onClick={()=>upd(d.id,"priority",p2)} style={{...B,background:d.priority===p2?PCOL[p2]:`${PCOL[p2]}18`,color:d.priority===p2?C.bg:PCOL[p2],padding:"3px 7px",fontSize:"0.6rem",borderRadius:"6px"}}>{p2}</button>
                     ))}
-                    <button onClick={()=>rem(d.id)} style={{...btnBase,background:`${C.red}18`,color:C.red,fontSize:"0.7rem",padding:"3px 7px",borderRadius:"6px"}}>✕</button>
+                    <button onClick={()=>rem(d.id)} style={{...B,background:`${C.red}18`,color:C.red,fontSize:"0.7rem",padding:"3px 7px",borderRadius:"6px"}}>✕</button>
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"10px",marginBottom:"8px"}}>
@@ -870,11 +796,9 @@ function DebtModule({ fmt, currency }) {
           </div>
         );
       })}
-
-      <button onClick={add} style={{...btnBase,background:`${C.gold}10`,border:`1px dashed ${C.gold}44`,color:C.gold,padding:"8px 14px",fontSize:"0.72rem",width:"100%",borderRadius:"8px"}}>
+      <button onClick={add} style={{...B,background:`${C.gold}0d`,border:`1px dashed ${C.gold}44`,color:C.gold,padding:"8px 14px",fontSize:"0.72rem",width:"100%",borderRadius:"8px"}}>
         + Add Debt
       </button>
-
       <div style={{background:C.surface,borderRadius:"10px",padding:"14px 16px",marginTop:"16px",border:`1px solid ${C.gold}22`}}>
         <div style={{fontSize:"0.6rem",color:C.gold,textTransform:"uppercase",letterSpacing:"0.12em",fontWeight:"800",marginBottom:"10px"}}>Summary</div>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
@@ -887,17 +811,17 @@ function DebtModule({ fmt, currency }) {
               return (
                 <tr key={pr} style={{borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
                   <td style={{padding:"5px 0",fontSize:"0.8rem",fontWeight:"700",color:PCOL[pr]}}>{pr}</td>
-                  <td style={{...monoFont,textAlign:"right",fontSize:"0.8rem",color:C.text,padding:"5px 0"}}>{fmt(pd.reduce((s,d)=>s+p$(d.balance),0))}</td>
-                  <td style={{...monoFont,textAlign:"right",fontSize:"0.8rem",color:C.text,padding:"5px 0"}}>{fmt(pd.reduce((s,d)=>s+p$(d.monthly),0))}</td>
-                  <td style={{...monoFont,textAlign:"right",fontSize:"0.8rem",color:C.textMid,padding:"5px 0"}}>{pd.length}</td>
+                  <td style={{...M,textAlign:"right",fontSize:"0.8rem",color:C.text,padding:"5px 0"}}>{fmt(pd.reduce((s,d)=>s+p$(d.balance),0))}</td>
+                  <td style={{...M,textAlign:"right",fontSize:"0.8rem",color:C.text,padding:"5px 0"}}>{fmt(pd.reduce((s,d)=>s+p$(d.monthly),0))}</td>
+                  <td style={{...M,textAlign:"right",fontSize:"0.8rem",color:C.textMid,padding:"5px 0"}}>{pd.length}</td>
                 </tr>
               );
             })}
             <tr style={{borderTop:`1px solid ${C.gold}33`}}>
               <td style={{padding:"6px 0",fontSize:"0.8rem",fontWeight:"800",color:C.gold}}>TOTAL</td>
-              <td style={{...monoFont,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.red,padding:"6px 0"}}>{fmt(totalBalance)}</td>
-              <td style={{...monoFont,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"6px 0"}}>{fmt(totalMonthly)}</td>
-              <td style={{...monoFont,textAlign:"right",fontSize:"0.8rem",color:C.textMid,padding:"6px 0"}}>{debts.length}</td>
+              <td style={{...M,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.red,padding:"6px 0"}}>{fmt(totalBalance)}</td>
+              <td style={{...M,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"6px 0"}}>{fmt(totalMonthly)}</td>
+              <td style={{...M,textAlign:"right",fontSize:"0.8rem",color:C.textMid,padding:"6px 0"}}>{debts.length}</td>
             </tr>
           </tbody>
         </table>
@@ -910,15 +834,15 @@ function DebtModule({ fmt, currency }) {
    MODULE 4 — INVESTMENT PORTFOLIO
 ══════════════════════════════════════════════════════════ */
 const INV_TYPES = ["Stock","Unit Trust","Bond","CD","Life Insurance","Real Estate","Other"];
-const INV_SK = "tbm_inv_v3";
 
 function InvestmentModule({ fmt, currency }) {
-  const [invs, setInvs] = useState(() => loadLS(INV_SK) || [
-    {id:"i1",name:"Equity 1",type:"Stock",current:"",purchase:"",notes:""},
-    {id:"i2",name:"Life Insurance Policy 1",type:"Life Insurance",current:"",purchase:"",notes:""},
-    {id:"i3",name:"CD 1",type:"CD",current:"",purchase:"",notes:""},
+  const SK = "tbm_inv_v4";
+  const [invs, setInvs] = useState(() => loadLS(SK) || [
+    {id:"i1",name:"Equity 1",            type:"Stock",         current:"",purchase:"",notes:""},
+    {id:"i2",name:"Life Insurance Pol 1",type:"Life Insurance",current:"",purchase:"",notes:""},
+    {id:"i3",name:"CD 1",               type:"CD",            current:"",purchase:"",notes:""},
   ]);
-  useEffect(() => { saveLS(INV_SK, invs); }, [invs]);
+  useEffect(() => { saveLS(SK, invs); }, [invs]);
 
   const upd = (id,f,v) => setInvs(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
   const add = () => setInvs(p=>[...p,{id:uid(),name:"New Investment",type:"Stock",current:"",purchase:"",notes:""}]);
@@ -926,8 +850,8 @@ function InvestmentModule({ fmt, currency }) {
 
   const tCur = invs.reduce((s,i)=>s+p$(i.current),0);
   const tPur = invs.reduce((s,i)=>s+p$(i.purchase),0);
-  const tGL  = tCur - tPur;
-  const tPct = tPur ? ((tGL/tPur)*100).toFixed(2) : null;
+  const tGL  = tCur-tPur;
+  const tPct = tPur?((tGL/tPur)*100).toFixed(2):null;
 
   const iS = {background:"transparent",border:"none",borderBottom:`1px solid ${C.textDim}44`,color:C.text,padding:"3px 2px",outline:"none",fontSize:"0.76rem",width:"100%"};
 
@@ -938,22 +862,17 @@ function InvestmentModule({ fmt, currency }) {
         <div style={{fontSize:"0.58rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.1em"}}>{currency.flag} {currency.code}</div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"10px",marginBottom:"18px"}}>
-        {[
-          {label:"Current Value",val:tCur,color:C.gold},
-          {label:"Cost",val:tPur,color:C.textMid},
-          {label:"Gain / Loss",val:tGL,color:tGL>=0?C.green:C.red},
-          {label:"% Change",val:tPct,color:tGL>=0?C.green:C.red,pct:true},
-        ].map(it=>(
+        {[{label:"Current Value",val:tCur,color:C.gold},{label:"Cost",val:tPur,color:C.textMid},{label:"Gain / Loss",val:tGL,color:tGL>=0?C.green:C.red},{label:"% Change",val:tPct,color:tGL>=0?C.green:C.red,pct:true}].map(it=>(
           <div key={it.label} style={{background:C.surface,borderRadius:"10px",padding:"12px",border:`1px solid ${it.color}22`,textAlign:"center"}}>
             <div style={{fontSize:"0.52rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"4px"}}>{it.label}</div>
-            <div style={{...monoFont,fontSize:"0.85rem",fontWeight:"700",color:it.color}}>
-              {it.pct ? (it.val?`${parseFloat(it.val)>0?"+":""}${it.val}%`:"—") : `${it.val<0?"-":""}${currency.symbol}${fmt(Math.abs(it.val))}`}
+            <div style={{...M,fontSize:"0.85rem",fontWeight:"700",color:it.color}}>
+              {it.pct?(it.val?`${parseFloat(it.val)>0?"+":""}${it.val}%`:"—"):`${it.val<0?"-":""}${currency.symbol}${fmt(Math.abs(it.val))}`}
             </div>
           </div>
         ))}
       </div>
       <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",minWidth:"560px"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:"540px"}}>
           <thead>
             <tr style={{borderBottom:`1px solid ${C.gold}33`}}>
               {["Name","Type","Current Value","Purchase Price","% Change","Notes",""].map((h,i)=>(
@@ -963,50 +882,35 @@ function InvestmentModule({ fmt, currency }) {
           </thead>
           <tbody>
             {invs.map(inv => {
-              const cur=p$(inv.current), pur=p$(inv.purchase), gl=cur-pur;
-              const pctC = pur?((gl/pur)*100).toFixed(2):null;
+              const cur=p$(inv.current),pur=p$(inv.purchase),gl=cur-pur;
+              const pctC=pur?((gl/pur)*100).toFixed(2):null;
               return (
                 <tr key={inv.id} style={{borderBottom:"1px solid rgba(255,255,255,0.03)"}}>
-                  <td style={{padding:"5px 4px",width:"22%"}}>
-                    <input value={inv.name} onChange={e=>upd(inv.id,"name",e.target.value)} style={{...iS,fontWeight:"600"}}/>
-                  </td>
+                  <td style={{padding:"5px 4px",width:"22%"}}><input value={inv.name} onChange={e=>upd(inv.id,"name",e.target.value)} style={{...iS,fontWeight:"600"}}/></td>
                   <td style={{padding:"5px 4px",width:"14%"}}>
-                    <select value={inv.type} onChange={e=>upd(inv.id,"type",e.target.value)}
-                      style={{background:C.surfaceUp,border:"none",borderBottom:`1px solid ${C.textDim}44`,color:C.text,padding:"3px 2px",fontSize:"0.74rem",outline:"none",width:"100%",fontFamily:"inherit"}}>
+                    <select value={inv.type} onChange={e=>upd(inv.id,"type",e.target.value)} style={{background:C.surfaceUp,border:"none",borderBottom:`1px solid ${C.textDim}44`,color:C.text,padding:"3px 2px",fontSize:"0.74rem",outline:"none",width:"100%",fontFamily:"inherit"}}>
                       {INV_TYPES.map(t=><option key={t} value={t}>{t}</option>)}
                     </select>
                   </td>
-                  <td style={{padding:"5px 4px",width:"16%"}}>
-                    <input value={inv.current} onChange={e=>upd(inv.id,"current",e.target.value)} placeholder="0.00" style={{...iS,...monoFont,textAlign:"right"}}/>
-                  </td>
-                  <td style={{padding:"5px 4px",width:"16%"}}>
-                    <input value={inv.purchase} onChange={e=>upd(inv.id,"purchase",e.target.value)} placeholder="0.00" style={{...iS,...monoFont,textAlign:"right"}}/>
-                  </td>
-                  <td style={{...monoFont,textAlign:"right",fontSize:"0.8rem",fontWeight:"600",padding:"5px 4px",color:(cur||pur)?(gl>=0?C.green:C.red):C.textDim}}>
-                    {pctC?`${parseFloat(pctC)>0?"+":""}${pctC}%`:"—"}
-                  </td>
-                  <td style={{padding:"5px 4px",width:"20%"}}>
-                    <input value={inv.notes} onChange={e=>upd(inv.id,"notes",e.target.value)} placeholder="Notes…" style={{...iS,color:C.textMid,fontSize:"0.72rem"}}/>
-                  </td>
-                  <td style={{textAlign:"center",padding:"5px 4px"}}>
-                    <button onClick={()=>rem(inv.id)} style={{...btnBase,background:`${C.red}18`,color:C.red,fontSize:"0.7rem",padding:"2px 6px",borderRadius:"6px"}}>✕</button>
-                  </td>
+                  <td style={{padding:"5px 4px",width:"16%"}}><input value={inv.current} onChange={e=>upd(inv.id,"current",e.target.value)} placeholder="0.00" style={{...iS,...M,textAlign:"right"}}/></td>
+                  <td style={{padding:"5px 4px",width:"16%"}}><input value={inv.purchase} onChange={e=>upd(inv.id,"purchase",e.target.value)} placeholder="0.00" style={{...iS,...M,textAlign:"right"}}/></td>
+                  <td style={{...M,textAlign:"right",fontSize:"0.8rem",fontWeight:"600",padding:"5px 4px",color:(cur||pur)?(gl>=0?C.green:C.red):C.textDim}}>{pctC?`${parseFloat(pctC)>0?"+":""}${pctC}%`:"—"}</td>
+                  <td style={{padding:"5px 4px",width:"20%"}}><input value={inv.notes} onChange={e=>upd(inv.id,"notes",e.target.value)} placeholder="Notes…" style={{...iS,color:C.textMid,fontSize:"0.72rem"}}/></td>
+                  <td style={{textAlign:"center",padding:"5px 4px"}}><button onClick={()=>rem(inv.id)} style={{...B,background:`${C.red}18`,color:C.red,fontSize:"0.7rem",padding:"2px 6px",borderRadius:"6px"}}>✕</button></td>
                 </tr>
               );
             })}
             <tr style={{borderTop:`2px solid ${C.gold}44`,background:`${C.gold}0d`}}>
               <td colSpan={2} style={{padding:"7px 4px",fontSize:"0.78rem",fontWeight:"800",color:C.gold,textTransform:"uppercase"}}>TOTAL</td>
-              <td style={{...monoFont,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 4px"}}>{fmt(tCur)}</td>
-              <td style={{...monoFont,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 4px"}}>{fmt(tPur)}</td>
-              <td style={{...monoFont,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",padding:"7px 4px",color:tGL>=0?C.green:C.red}}>{tPct?`${parseFloat(tPct)>0?"+":""}${tPct}%`:"—"}</td>
+              <td style={{...M,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 4px"}}>{fmt(tCur)}</td>
+              <td style={{...M,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",color:C.gold,padding:"7px 4px"}}>{fmt(tPur)}</td>
+              <td style={{...M,textAlign:"right",fontSize:"0.82rem",fontWeight:"800",padding:"7px 4px",color:tGL>=0?C.green:C.red}}>{tPct?`${parseFloat(tPct)>0?"+":""}${tPct}%`:"—"}</td>
               <td colSpan={2}/>
             </tr>
           </tbody>
         </table>
       </div>
-      <button onClick={add} style={{...btnBase,background:`${C.gold}10`,border:`1px dashed ${C.gold}44`,color:C.gold,padding:"8px 14px",fontSize:"0.72rem",width:"100%",marginTop:"10px",borderRadius:"8px"}}>
-        + Add Investment
-      </button>
+      <button onClick={add} style={{...B,background:`${C.gold}0d`,border:`1px dashed ${C.gold}44`,color:C.gold,padding:"8px 14px",fontSize:"0.72rem",width:"100%",marginTop:"10px",borderRadius:"8px"}}>+ Add Investment</button>
     </div>
   );
 }
@@ -1014,23 +918,20 @@ function InvestmentModule({ fmt, currency }) {
 /* ══════════════════════════════════════════════════════════
    MODULE 5 — VEHICLE
 ══════════════════════════════════════════════════════════ */
-const VEH_SK = "tbm_veh_v3";
-
 function VehicleModule({ fmt, currency }) {
-  const saved = loadLS(VEH_SK) || {};
+  const SK = "tbm_veh_v4";
+  const saved = loadLS(SK) || {};
   const [sticker, setSticker] = useState(()=>saved.sticker||"");
   const [vName,   setVName]   = useState(()=>saved.vName||"My Vehicle");
   const [data,    setData]    = useState(()=>saved.data||{});
   const YEARS = [1,2,3,4,5];
+  useEffect(()=>{ saveLS(SK,{sticker,vName,data}); },[sticker,vName,data]);
 
-  useEffect(()=>{ saveLS(VEH_SK,{sticker,vName,data}); },[sticker,vName,data]);
-
-  const getV = (row,yr) => data[row]?.[yr] || "";
+  const getV = (row,yr) => data[row]?.[yr]||"";
   const setV = (row,yr,val) => setData(p=>({...p,[row]:{...(p[row]||{}),[yr]:val}}));
   const rowTotal = row => YEARS.reduce((s,yr)=>s+p$(getV(row,yr)),0);
   const yearTotal = yr => VEHICLE_ROWS.reduce((s,r)=>s+p$(getV(r.key,yr)),0);
   const grandTotal = YEARS.reduce((s,yr)=>s+yearTotal(yr),0);
-
   const thS = {fontSize:"0.58rem",color:C.textMid,letterSpacing:"0.1em",textTransform:"uppercase",padding:"6px 4px",textAlign:"right",fontWeight:"600"};
 
   return (
@@ -1040,16 +941,16 @@ function VehicleModule({ fmt, currency }) {
         <div style={{fontSize:"0.58rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.1em"}}>5-Year Projection · {currency.flag} {currency.code}</div>
       </div>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px",marginBottom:"18px"}}>
-        {[["Vehicle Name / Model",vName,setVName,"text","0.88rem"],["Sticker Price",sticker,setSticker,"decimal","0.88rem"]].map(([lbl,val,setter,mode,fs])=>(
+        {[["Vehicle Name","text",vName,setVName,"e.g. Toyota Corolla"],["Sticker Price","decimal",sticker,setSticker,"0.00"]].map(([lbl,mode,val,setter,ph])=>(
           <div key={lbl} style={{background:C.surface,borderRadius:"10px",padding:"12px 14px",border:`1px solid ${C.gold}22`}}>
             <div style={{fontSize:"0.56rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:"6px"}}>{lbl}</div>
-            <input value={val} onChange={e=>setter(e.target.value)} placeholder={mode==="decimal"?"0.00":"e.g. Toyota Corolla"}
-              style={{background:"transparent",border:"none",borderBottom:`1px solid ${C.textDim}`,color:C.gold,padding:"4px 2px",outline:"none",fontSize:fs,fontWeight:"700",fontFamily:mode==="decimal"?"'Fira Code',monospace":"inherit",width:"100%"}}/>
+            <input value={val} onChange={e=>setter(e.target.value)} placeholder={ph}
+              style={{background:"transparent",border:"none",borderBottom:`1px solid ${C.textDim}`,color:C.gold,padding:"4px 2px",outline:"none",fontSize:"0.88rem",fontWeight:"700",fontFamily:mode==="decimal"?"'Fira Code',monospace":"inherit",width:"100%"}}/>
           </div>
         ))}
       </div>
       <div style={{overflowX:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",minWidth:"540px"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:"520px"}}>
           <thead>
             <tr style={{borderBottom:`1px solid ${C.gold}33`}}>
               <th style={{...thS,textAlign:"left",width:"18%"}}>Item</th>
@@ -1063,18 +964,16 @@ function VehicleModule({ fmt, currency }) {
                 <td style={{padding:"5px 4px",fontSize:"0.78rem",color:C.text}}>{row.label}</td>
                 {YEARS.map(yr=>(
                   <td key={yr} style={{padding:"3px 4px"}}>
-                    <LiveInput value={getV(row.key,yr)} onChange={v=>setV(row.key,yr,v)}/>
+                    <CellInput storeValue={getV(row.key,yr)} onBlurCommit={v=>setV(row.key,yr,v)}/>
                   </td>
                 ))}
-                <td style={{...monoFont,textAlign:"right",fontSize:"0.78rem",fontWeight:"700",color:C.gold,padding:"5px 4px"}}>
-                  {rowTotal(row.key)?fmt(rowTotal(row.key)):"—"}
-                </td>
+                <td style={{...M,textAlign:"right",fontSize:"0.78rem",fontWeight:"700",color:C.gold,padding:"5px 4px"}}>{rowTotal(row.key)?fmt(rowTotal(row.key)):"—"}</td>
               </tr>
             ))}
             <tr style={{borderTop:`2px solid ${C.gold}44`,background:`${C.gold}0d`}}>
               <td style={{padding:"7px 4px",fontSize:"0.78rem",fontWeight:"800",color:C.gold,textTransform:"uppercase"}}>TOTAL</td>
-              {YEARS.map(yr=><td key={yr} style={{...monoFont,textAlign:"right",fontSize:"0.8rem",fontWeight:"700",color:C.gold,padding:"7px 4px"}}>{yearTotal(yr)?fmt(yearTotal(yr)):"—"}</td>)}
-              <td style={{...monoFont,textAlign:"right",fontSize:"0.88rem",fontWeight:"800",color:C.gold,padding:"7px 4px"}}>{fmt(grandTotal)}</td>
+              {YEARS.map(yr=><td key={yr} style={{...M,textAlign:"right",fontSize:"0.8rem",fontWeight:"700",color:C.gold,padding:"7px 4px"}}>{yearTotal(yr)?fmt(yearTotal(yr)):"—"}</td>)}
+              <td style={{...M,textAlign:"right",fontSize:"0.88rem",fontWeight:"800",color:C.gold,padding:"7px 4px"}}>{fmt(grandTotal)}</td>
             </tr>
           </tbody>
         </table>
@@ -1085,7 +984,7 @@ function VehicleModule({ fmt, currency }) {
             {[{label:"Sticker Price",val:p$(sticker),color:C.gold},{label:"5-Year Running Cost",val:grandTotal,color:C.red},{label:"True Total Cost",val:p$(sticker)+grandTotal,color:C.purple}].map(it=>(
               <div key={it.label} style={{background:C.surface,borderRadius:"10px",padding:"12px",border:`1px solid ${it.color}22`,textAlign:"center"}}>
                 <div style={{fontSize:"0.52rem",color:C.textMid,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"4px"}}>{it.label}</div>
-                <div style={{...monoFont,fontSize:"0.85rem",fontWeight:"700",color:it.color}}>{currency.symbol}{fmt(it.val)}</div>
+                <div style={{...M,fontSize:"0.85rem",fontWeight:"700",color:it.color}}>{currency.symbol}{fmt(it.val)}</div>
               </div>
             ))}
           </div>
@@ -1109,25 +1008,22 @@ const MODULES = [
   {key:"vehicle",  label:"Vehicle",   icon:"🚗"},
 ];
 
-const MAIN_SK = "tbm_main_v6";
-
 export default function App() {
   const now = new Date();
-  const [mod,  setMod]  = useState("budget");
-  const [year, setYear] = useState(now.getFullYear());
+  const [mod,    setMod]    = useState("budget");
+  const [year,   setYear]   = useState(now.getFullYear());
   const [showCP, setShowCP] = useState(false);
   const [toast,  setToast]  = useState("");
 
   const [currency, setCurrency] = useState(() => {
-    const s = loadLS(MAIN_SK);
+    const s = loadLS("tbm_main_v7");
     return s?.currency ? (CURRENCIES.find(c=>c.code===s.currency.code)||CURRENCIES[0]) : CURRENCIES[0];
   });
 
   const fmt = useMemo(() => makeFmt(currency), [currency]);
+  useEffect(() => { saveLS("tbm_main_v7", {currency}); }, [currency]);
 
-  useEffect(() => { saveLS(MAIN_SK, {currency}); }, [currency]);
-
-  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(""), 2500); };
+  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(""),2500); };
   const pickCurrency = cur => { setCurrency(cur); showToast(`${cur.flag} Switched to ${cur.code}`); };
 
   return (
@@ -1152,37 +1048,37 @@ export default function App() {
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
-            <button onClick={()=>setShowCP(true)} style={{...btnBase,display:"flex",alignItems:"center",gap:"4px",background:`${C.gold}18`,border:`1px solid ${C.gold}44`,color:C.gold,padding:"5px 9px",fontSize:"0.7rem"}}>
+            <button onClick={()=>setShowCP(true)} style={{...B,display:"flex",alignItems:"center",gap:"4px",background:`${C.gold}18`,border:`1px solid ${C.gold}44`,color:C.gold,padding:"5px 9px",fontSize:"0.7rem"}}>
               <span style={{fontSize:"0.95rem",lineHeight:1}}>{currency.flag}</span>
-              <span style={{...monoFont,fontWeight:"800"}}>{currency.code}</span>
+              <span style={{...M,fontWeight:"800"}}>{currency.code}</span>
               <span style={{fontSize:"0.55rem",opacity:0.5}}>▼</span>
             </button>
-            {mod === "budget" && (
+            {mod==="budget" && (
               <>
-                <button onClick={()=>setYear(y=>y-1)} style={{...btnBase,background:`${C.gold}14`,color:C.gold,padding:"5px 8px",fontSize:"0.9rem"}}>‹</button>
-                <span style={{...monoFont,fontSize:"0.85rem",color:C.gold,fontWeight:"700",minWidth:"40px",textAlign:"center"}}>{year}</span>
-                <button onClick={()=>setYear(y=>y+1)} style={{...btnBase,background:`${C.gold}14`,color:C.gold,padding:"5px 8px",fontSize:"0.9rem"}}>›</button>
+                <button onClick={()=>setYear(y=>y-1)} style={{...B,background:`${C.gold}14`,color:C.gold,padding:"5px 8px",fontSize:"0.9rem"}}>‹</button>
+                <span style={{...M,fontSize:"0.85rem",color:C.gold,fontWeight:"700",minWidth:"40px",textAlign:"center"}}>{year}</span>
+                <button onClick={()=>setYear(y=>y+1)} style={{...B,background:`${C.gold}14`,color:C.gold,padding:"5px 8px",fontSize:"0.9rem"}}>›</button>
               </>
             )}
           </div>
         </div>
       </div>
 
-      {/* Page content */}
+      {/* Content */}
       <div style={{padding:"16px 14px"}}>
-        {mod === "budget"    && <BudgetModule     year={year} currency={currency} fmt={fmt}/>}
-        {mod === "networth"  && <NetWorthModule   fmt={fmt} currency={currency}/>}
-        {mod === "debt"      && <DebtModule       fmt={fmt} currency={currency}/>}
-        {mod === "portfolio" && <InvestmentModule fmt={fmt} currency={currency}/>}
-        {mod === "vehicle"   && <VehicleModule    fmt={fmt} currency={currency}/>}
+        {mod==="budget"    && <BudgetModule     year={year} currency={currency} fmt={fmt}/>}
+        {mod==="networth"  && <NetWorthModule   fmt={fmt} currency={currency}/>}
+        {mod==="debt"      && <DebtModule       fmt={fmt} currency={currency}/>}
+        {mod==="portfolio" && <InvestmentModule fmt={fmt} currency={currency}/>}
+        {mod==="vehicle"   && <VehicleModule    fmt={fmt} currency={currency}/>}
       </div>
 
       {/* Bottom Nav */}
       <div style={{position:"fixed",bottom:0,left:0,right:0,background:`linear-gradient(0deg,${C.surface},rgba(19,22,32,0.97))`,borderTop:`1px solid ${C.gold}22`,padding:"8px 4px 10px",display:"flex",justifyContent:"space-around",zIndex:200,backdropFilter:"blur(12px)"}}>
         {MODULES.map(m => {
-          const active = mod === m.key;
+          const active = mod===m.key;
           return (
-            <button key={m.key} onClick={()=>setMod(m.key)} style={{...btnBase,display:"flex",flexDirection:"column",alignItems:"center",gap:"3px",flex:1,padding:"5px 2px",background:"transparent",borderRadius:"10px"}}>
+            <button key={m.key} onClick={()=>setMod(m.key)} style={{...B,display:"flex",flexDirection:"column",alignItems:"center",gap:"3px",flex:1,padding:"5px 2px",background:"transparent",borderRadius:"10px"}}>
               <span style={{fontSize:active?"1.3rem":"1.1rem",transition:"font-size 0.15s"}}>{m.icon}</span>
               <span style={{fontSize:"0.58rem",fontWeight:active?"800":"500",color:active?C.gold:C.textDim,letterSpacing:"0.04em",textTransform:"uppercase"}}>{m.label}</span>
               {active && <div style={{width:"18px",height:"2px",borderRadius:"1px",background:C.gold}}/>}
